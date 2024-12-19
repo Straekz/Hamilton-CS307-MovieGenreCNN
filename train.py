@@ -3,25 +3,58 @@ import ast
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import wandb
 
 from torch.optim import Adam
 from tqdm import tqdm
 from torch.utils.data import DataLoader, Dataset, random_split
-from torchvision import datasets, transforms
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torchvision import transforms
 from PIL import Image
 
 from torchvision import models, transforms
 
 BATCH_SIZE = 32
 LR = 0.003
-NUM_EPOCHS = 30
+NUM_EPOCHS = 40
+PATIENCE = 8
+IMG_RESIZE = (299, 299)
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-PATIENCE = 5
 
+# Model using Inception V3
+class I_V3Movie(nn.Module):
+    def __init__(self, num_genres):
+        super(I_V3Movie, self).__init__()
+        # Inception v3 expects input size (299x299)
+        self.base_model = models.inception_v3(pretrained=True)
+        in_features = self.base_model.fc.in_features
+        self.base_model.fc = nn.Linear(in_features, num_genres)
+
+    def forward(self, x):
+        # Inception v3 has two outputs during training (auxiliary and final output)
+        # For inference or multi-label training, we only need the main output
+        if self.training:
+            x, aux = self.base_model(x)  # Both outputs during training
+            return x
+        else:
+            x = self.base_model(x)  # Only main output during inference
+            return x
+
+# Model using GoogLeNet
+class GoogLeMovie(nn.Module):
+    def __init__(self, num_genres):
+        super(GoogLeMovie, self).__init__()
+        self.base_model = models.googlenet(pretrained=True)
+        in_features = self.base_model.fc.in_features
+        self.base_model.fc = nn.Linear(in_features, num_genres)
+
+    def forward(self, x):
+        return self.base_model(x)
+
+# Model based on LeNet architecture
 class MovieGenreClassifierCNN(nn.Module):
     def __init__(self, num_genres):
         super(MovieGenreClassifierCNN, self).__init__()
@@ -45,6 +78,7 @@ class MovieGenreClassifierCNN(nn.Module):
         x = self.fc2(x)
         return x
 
+# For turning data into a dataset
 class MoviePostersDataset(Dataset):
     def __init__(self, image_dir, labels_file, transform=None):
         self.image_dir = image_dir
@@ -73,6 +107,7 @@ def one_hot_encode(genres, genre_to_idx):
         encoding[genre_to_idx[genre]] = 1
     return encoding
 
+# Ensure the filenames has a file extension and perform one-hot encoding to all genres
 def preprocess_data(raw_data_path):
     raw_df = pd.read_csv(raw_data_path)
     raw_df['genre_ids'] = raw_df['genre_ids'].apply(ast.literal_eval)
@@ -84,10 +119,11 @@ def preprocess_data(raw_data_path):
     new_df = pd.DataFrame()
     new_df['filename'] = raw_df['file'].apply(lambda x: str(x) + ".jpg")
     new_df['encoded_genres'] = raw_df['genre_ids'].apply(lambda x: one_hot_encode(x, genre_to_idx))
-    new_df[['filename', 'encoded_genres']].to_csv('data\preprocessed.csv', index=False)
+    new_df[['filename', 'encoded_genres']].to_csv('data\French\preprocessed.csv', index=False)
 
     return new_df, all_genres
 
+# Calculate the mean and standard deviation of image set to normalize them
 def calculate_mean_std(dataset, batch_size=32):
     # Use a simple transform to load raw pixel values as tensors
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
@@ -114,16 +150,17 @@ def calculate_mean_std(dataset, batch_size=32):
 
     return mean, std
 
+# Create dataloarders
 def dataload_train(image_dir, labels_file):
     norm_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize(IMG_RESIZE),
         transforms.ToTensor()
     ])
     temp = MoviePostersDataset(image_dir, labels_file, transform=norm_transform)
     mean, std = calculate_mean_std(temp)
 
     transform = transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize(IMG_RESIZE),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std)
     ])
@@ -143,14 +180,17 @@ def dataload_train(image_dir, labels_file):
 
     return train_loader, val_loader
 
+# Function to train the model
 def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, scheduler):
+    wandb.init(project="movie-genre-classification", name="training")
+    
     train_losses = []
     val_losses = []
     train_accuracies = []
     val_accuracies = []
     best_model = None
     best_val_loss = float('inf')
-    stop_counter = 0
+    counter = 0
 
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
@@ -186,6 +226,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         train_accuracy = 100 * correct_train / total_train
         train_accuracies.append(train_accuracy)
         train_losses.append(train_loss / len(train_loader))
+        wandb.log({"epoch": epoch, "train_loss": train_loss, "train_accuracy": train_accuracy})
 
         # Validation phase
         model.eval()
@@ -208,28 +249,32 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         val_accuracy = 100 * correct_val / total_val
         val_accuracies.append(val_accuracy)
         val_losses.append(val_loss / len(val_loader))
+        wandb.log({"epoch": epoch, "val_loss": val_loss, "val_accuracy": val_accuracy})
 
         if val_loss < best_val_loss:
             best_model = model.state_dict()
             best_val_loss = val_loss
-            stop_counter = 0
-        else: 
-            stop_counter += 1
-
-        if stop_counter >= PATIENCE:
-            print(f'Early stopping at epoch {epoch+1}')
+            counter = 0
+        else:
+            counter += 1
+        
+        if counter >= PATIENCE:
+            print(f"Early stock at Epoch {epoch+1}/{num_epochs}")
             break
 
         print(f"Epoch {epoch+1}/{num_epochs}, "
             f"Train Loss: {train_losses[-1]:.4f}, Train Accuracy: {train_accuracies[-1]:.4f}, "
             f"Val Loss: {val_losses[-1]:.4f}, Val Accuracy: {val_accuracies[-1]:.4f}")
     
+    wandb.finish()
+
     model.load_state_dict(best_model) # Load the best model
     torch.save(model.state_dict(), r'MovieGenreCNN.pth') # Save the best model as pth
     print("Best model saved as 'MovieGenreCNN.pth'.")
 
     return train_losses, val_losses, train_accuracies, val_accuracies
 
+# Function for plotting training vs validation accuracy or loss
 def plot_info(legend_1, legend_2, plot_type):
     plt.figure(figsize=(10, 5))
     plt.plot(legend_1, label=f'Training {plot_type}')
@@ -242,19 +287,17 @@ def plot_info(legend_1, legend_2, plot_type):
 
 def main():
     preprocessed_df, all_genres = preprocess_data(r"data\raw.csv")
+    print(all_genres)
     image_dir = "data/posters/"
     labels_file = "data/preprocessed.csv"
     train_loader, val_loader = dataload_train(image_dir, labels_file)
 
-    model = MovieGenreClassifierCNN(len(all_genres)).to(DEVICE)
+    # model = MovieGenreClassifierCNN(len(all_genres)).to(DEVICE)
+    # model = GoogLeMovie(len(all_genres)).to(DEVICE)
+    model = I_V3Movie(len(all_genres)).to(DEVICE)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr = LR)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer,
-        T_0=10,  # Number of iterations for the first restart
-        T_mult=2,  # Multiplicative factor for subsequent restart cycles
-        eta_min=1e-5  # Minimum learning rate
-    )
+    optimizer = Adam(model.parameters(), lr = LR)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2, eta_min=1e-5)
     train_losses, val_losses, train_accuracies, val_accuracies = train_model(model, train_loader, val_loader, criterion, optimizer, NUM_EPOCHS, scheduler)
 
     plot_info(train_accuracies, val_accuracies, "Accuracy")

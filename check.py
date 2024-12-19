@@ -2,6 +2,7 @@ import os
 from PIL import Image
 import pandas as pd
 
+#checks for corrupted images
 def check_images_in_folder(folder_path):
     # List all files in the folder
     files = [f for f in os.listdir(folder_path) if f.lower().endswith('.jpg')]
@@ -25,11 +26,11 @@ def check_images_in_folder(folder_path):
     return df
 
 # Example usage
-folder_path = "data/posters"  # Replace with the path to your folder
+folder_path = "data/French/posters"  # Replace with the path to your folder
 result_df = check_images_in_folder(folder_path)
 
 # Display the results
 print(result_df)
 
 # Optionally save the results to a CSV
-result_df.to_csv("data/image_check_results.csv", index=False)
+result_df.to_csv("data/image_check_results2.csv", index=False)

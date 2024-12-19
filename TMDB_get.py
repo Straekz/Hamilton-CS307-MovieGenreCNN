@@ -14,7 +14,7 @@ url = "https://api.themoviedb.org/3/genre/movie/list?"
 headers = {
     "accept": "application/json",
     "Authorization": "Bearer " + AUTH,
-    "Language": "en"
+    "Language": "fr"
 }
 genres_raw = requests.get(url, headers=headers).json()['genres']
 
@@ -30,19 +30,19 @@ data = {
         'name': []}
 page = 1
 
-start_yr = '1990-01-01'
-end_yr = '1999-12-15'
-filename = 're2'
+start_yr = '1960-01-01'
+end_yr = '2024-12-5'
+filename = 'french'
 num = 0
 
 # Goes through 500 pages of movies on TMDB and saves each movie's genres and posters
-while page <= 5:
+while page <= 500:
     try:
-        url = f'https://api.themoviedb.org/3/discover/movie?api_key={API}&language=en-US&sort_by=release_date.asc&page={page}&primary_release_date.gte={start_yr}&primary_release_date.lte={end_yr}'
-        # url = f'https://api.themoviedb.org/3/movie/popular?api_key={API}&language=en&page={page}'
+        # url = f'https://api.themoviedb.org/3/discover/movie?api_key={API}&language=fr&sort_by=release_date.asc&page={page}&primary_release_date.gte={start_yr}&primary_release_date.lte={end_yr}'
+        url = f'https://api.themoviedb.org/3/movie/popular?api_key={API}&language=fr&page={page}'
         movies = requests.get(url).json()
-        
-        for movie in movies['results']:
+
+        for movie in movies["results"]:
             #Preprocess: Ensure movies with no list genre or posters are removed
             if movie['genre_ids'] != [] and movie['poster_path'] != None:
 
@@ -61,19 +61,19 @@ while page <= 5:
 
 #Save as csv
 data_df = pd.DataFrame(data)
-data_df.to_csv(f"data/raw_{filename}.csv")
+data_df.to_csv(f"data/French/raw_{filename}.csv")
 
 # data = pd.read_csv("data/raw_1970s.csv")
 
-#Download all poster images and name them by number in the order of the csv file.
-# url = "https://image.tmdb.org/t/p/original"
-# for idx in range(len(data['poster_path'])):
-#         findImg = requests.get(url + str(data['poster_path'][idx])).content #Find poster from online
+# Download all poster images and name them by number in the order of the csv file.
+url = "https://image.tmdb.org/t/p/original"
+for idx in range(len(data['poster_path'])):
+        findImg = requests.get(url + str(data['poster_path'][idx])).content #Find poster from online
         
-#         #Download poster
-#         img = open("data/posters/" + str(idx+num) + '.jpg', 'wb') 
-#         img.write(findImg)
-#         img.close()
+        #Download poster
+        img = open("data/French/posters/" + str(idx+num) + '.jpg', 'wb') 
+        img.write(findImg)
+        img.close()
 
 # r60s = pd.read_csv("data/raw_1960s.csv")
 # r70s = pd.read_csv("data/raw_1970s.csv")
