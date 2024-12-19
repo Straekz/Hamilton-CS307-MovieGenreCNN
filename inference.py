@@ -8,7 +8,7 @@ from torchvision import transforms
 from torch.utils.data import DataLoader, Dataset
 from PIL import Image
 
-from train import I_V3Movie, calculate_mean_std, MoviePostersDataset
+from train import I_V3Movie, MoviePostersDataset
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 ALL_GENRES = ['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family', 'Fantasy', 'History', 'Horror', 'Music', 'Mystery', 'Romance', 'Science Fiction', 'TV Movie', 'Thriller', 'War', 'Western']
@@ -27,17 +27,27 @@ class TestDataset(Dataset):
         row = self.labels_df.iloc[idx]
         img_path = os.path.join(self.image_dir, row['filename'])
         image = Image.open(img_path).convert("RGB")
-        # label = torch.tensor(row['encoded_genres'], dtype=torch.float32)
+        label = torch.tensor(row['encoded_genres'], dtype=torch.float32)
 
         if self.transform:
             image = self.transform(image)
 
-        return image, row['filename'], row['encoded_genres']
+        return image, label, row['filename']
+
+# Function to calculate match percentage for each row
+def calculate_accuracy(row):
+    matches = sum([1 if a == b else 0 for a, b in zip(row['Actual'], row['Prediction'])])
+    accuracy = (matches / len(row['Actual'])) * 100
+    return accuracy
+
+def compare_exact(row):
+    if (sum([a == b for a, b in zip(row['Actual'], row['Prediction'])]) == 19):
+        return 1
+    return 0
 
 def inference(image_folder, labels_path, model_path):
     # Load labels
     labels_df = pd.read_csv(labels_path)
-    print(f"CSV Columns: {labels_df.columns}")
 
     # Load model
     num_genres = len(ast.literal_eval(labels_df['encoded_genres'].iloc[0]))
@@ -45,18 +55,11 @@ def inference(image_folder, labels_path, model_path):
     model.load_state_dict(torch.load(model_path, map_location=DEVICE))
     model.eval()
 
-    norm_transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor()
-    ])
-    temp = MoviePostersDataset("data/posters", "data/preprocessed.csv", transform=norm_transform)
-    mean, std = calculate_mean_std(temp)
-
     # Prepare data
     transform = transforms.Compose([
-        transforms.Resize((299, 299)),
+        transforms.Resize((400, 400)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=mean, std=std),
+        transforms.Normalize(mean=[0.48450906, 0.42860913, 0.39646831], std=[0.34108709, 0.32412509, 0.319536]),
     ])
     dataset = TestDataset(image_folder, labels_path, transform=transform)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
@@ -64,25 +67,24 @@ def inference(image_folder, labels_path, model_path):
     results = []
 
     with torch.no_grad():
-        for images, filenames, actual_genres in dataloader:
-            images = images.to(DEVICE)
-            outputs = torch.sigmoid(model(images))  # Multi-label classification
-            predictions = (outputs > 0.5).int().cpu().tolist()
+        for images, labels, filenames in dataloader:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            outputs = model(images)
+            predictions = (outputs.sigmoid() > 0.5).int().tolist()
+            results.extend(zip(filenames, predictions))
 
-            for filename, pred, actual in zip(filenames, predictions, actual_genres):
-                results.append({
-                    "filename": filename,
-                    "predicted_genres": pred,
-                    "actual_genres": actual.tolist()
-                })
+    results_df = pd.DataFrame(results, columns=['Filename', 'Prediction'])
+    results_df['Actual'] = labels_df['encoded_genres'].apply(ast.literal_eval)
 
     # Calculate accuracy
-    correct = sum(result['predicted_genres'] == result['actual_genres'] for result in results)
-    accuracy = correct / len(results) if results else 0.0
-    print(f"Accuracy: {accuracy:.2%}")
+    results_df['Accuracy'] = results_df.apply(calculate_accuracy, axis=1)
+    overall_accuracy = results_df['Accuracy'].mean()
+    results_df['Correct'] = results_df.apply(compare_exact, axis=1)
+    correctness = results_df['Correct'].mean() * 100
+    print(f"Overall Accuracy: {overall_accuracy:.2f}%")
+    print(f"Exact Correctness Percentage: {correctness:.2f}%")
 
     # Save results to CSV
-    results_df = pd.DataFrame(results)
     results_df.to_csv("inference_results.csv", index=False)
     print("Inference results saved to 'inference_results.csv'")
 
